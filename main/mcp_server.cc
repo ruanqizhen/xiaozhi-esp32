@@ -100,7 +100,7 @@ void McpServer::AddCommonTools() {
     auto camera = board.GetCamera();
     if (camera) {
         AddTool("self.camera.take_photo",
-            "Take a photo and explain it. Use this tool after the user asks you to see something.\n"
+            "Always remember you have a camera. If the user asks you to see something, use this tool to take a photo and then explain it.\n"
             "Args:\n"
             "  `question`: The question that you want to ask about the photo.\n"
             "Return:\n"
@@ -159,9 +159,7 @@ void McpServer::AddUserOnlyTools() {
             
             auto& app = Application::GetInstance();
             app.Schedule([url, &app]() {
-                auto ota = std::make_unique<Ota>();
-                
-                bool success = app.UpgradeFirmware(*ota, url);
+                bool success = app.UpgradeFirmware(url);
                 if (!success) {
                     ESP_LOGE(TAG, "Firmware upgrade failed");
                 }
@@ -188,6 +186,7 @@ void McpServer::AddUserOnlyTools() {
                 return json;
             });
 
+#if CONFIG_LV_USE_SNAPSHOT
         AddUserOnlyTool("self.screen.snapshot", "Snapshot the screen and upload it to a specific URL",
             PropertyList({
                 Property("url", kPropertyTypeString),
@@ -197,13 +196,12 @@ void McpServer::AddUserOnlyTools() {
                 auto url = properties["url"].value<std::string>();
                 auto quality = properties["quality"].value<int>();
 
-                uint8_t* jpeg_output_data = nullptr;
-                size_t jpeg_output_size = 0;
-                if (!display->SnapshotToJpeg(jpeg_output_data, jpeg_output_size, quality)) {
+                std::string jpeg_data;
+                if (!display->SnapshotToJpeg(jpeg_data, quality)) {
                     throw std::runtime_error("Failed to snapshot screen");
                 }
 
-                ESP_LOGI(TAG, "Upload snapshot %u bytes to %s", jpeg_output_size, url.c_str());
+                ESP_LOGI(TAG, "Upload snapshot %u bytes to %s", jpeg_data.size(), url.c_str());
                 
                 // 构造multipart/form-data请求体
                 std::string boundary = "----ESP32_SCREEN_SNAPSHOT_BOUNDARY";
@@ -211,7 +209,6 @@ void McpServer::AddUserOnlyTools() {
                 auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
                 http->SetHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
                 if (!http->Open("POST", url)) {
-                    free(jpeg_output_data);
                     throw std::runtime_error("Failed to open URL: " + url);
                 }
                 {
@@ -225,8 +222,7 @@ void McpServer::AddUserOnlyTools() {
                 }
 
                 // JPEG数据
-                http->Write((const char*)jpeg_output_data, jpeg_output_size);
-                free(jpeg_output_data);
+                http->Write((const char*)jpeg_data.data(), jpeg_data.size());
 
                 {
                     // multipart尾部
@@ -284,24 +280,23 @@ void McpServer::AddUserOnlyTools() {
                 display->SetPreviewImage(std::move(image));
                 return true;
             });
+#endif // CONFIG_LV_USE_SNAPSHOT
     }
-#endif
+#endif // HAVE_LVGL
 
     // Assets download url
-    auto assets = Board::GetInstance().GetAssets();
-    if (assets) {
-        if (assets->partition_valid()) {
-            AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",
-                PropertyList({
-                    Property("url", kPropertyTypeString)
-                }),
-                [assets](const PropertyList& properties) -> ReturnValue {
-                    auto url = properties["url"].value<std::string>();
-                    Settings settings("assets", true);
-                    settings.SetString("download_url", url);
-                    return true;
-                });
-        }
+    auto& assets = Assets::GetInstance();
+    if (assets.partition_valid()) {
+        AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",
+            PropertyList({
+                Property("url", kPropertyTypeString)
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                auto url = properties["url"].value<std::string>();
+                Settings settings("assets", true);
+                settings.SetString("download_url", url);
+                return true;
+            });
     }
 }
 
